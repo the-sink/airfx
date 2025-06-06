@@ -7,6 +7,7 @@ public:
     ByteStream(uint8_t* buffer, size_t max_length) : _buffer(buffer), _max_length(max_length), _read_cursor(0), _write_cursor(0) {}
 
     // write
+    
     void write_uint8(uint8_t value) {
         if (_write_cursor + sizeof(value) > _max_length) return;
 
@@ -33,7 +34,12 @@ public:
         }
     };
 
+    bool can_write_bytes(size_t size) {
+        return _write_cursor + size <= _max_length;
+    };
+
     // read
+
     uint8_t read_uint8() {
         return _buffer[_read_cursor++];
     };
@@ -57,6 +63,10 @@ public:
         }
         _read_cursor += 8;
         return value;
+    };
+
+    bool can_read_bytes(size_t size) {
+        return _read_cursor + size <= _max_length;
     };
 
 private:

@@ -13,7 +13,6 @@
 void setup() {
   Serial.begin(9600);
 
-  pinMode(MODE_JUMPER_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
 
   setup_mode();
