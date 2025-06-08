@@ -22,6 +22,25 @@ int64_t rtt_samples[NUM_SYNC_SAMPLES];
 int64_t offset_samples[NUM_SYNC_SAMPLES];
 int64_t time_samples[NUM_SYNC_SAMPLES];
 
+uint8_t state = STATE_IDLE;
+uint8_t requested_state = STATE_IDLE;
+
+int64_t start_ts;
+int64_t stop_ts;
+
+uint32_t buffer_a[256];
+uint32_t buffer_b[256];
+
+uint8_t buffer_a_index = 0;
+uint8_t buffer_b_index = 0;
+
+int64_t buffer_a_start_ts;
+int64_t buffer_b_start_ts;
+
+bool read_buffer_a = true;
+
+int64_t next_entry_timestamp;
+
 void onUDPPacket(AsyncUDPPacket packet) {
   int64_t receive_time = esp_timer_get_time();
   size_t len = packet.length();
@@ -80,6 +99,39 @@ void onUDPPacket(AsyncUDPPacket packet) {
 
       break;
     }
+    case COMMAND_START: {
+      start_ts = stream.read_uint64();
+      requested_state = STATE_PLAYING;
+      break;
+    }
+    case COMMAND_STOP: {
+      stop_ts = stream.read_uint64();
+      requested_state = STATE_IDLE;
+      break;
+    }
+    case COMMAND_DATA: {
+      bool write_buffer_a = !read_buffer_a;
+      int64_t this_start_ts = stream.read_uint64();
+      uint32_t this_buffer[256];
+      uint8_t i = 0;
+      while (stream.can_read_bytes(4)) {
+        uint8_t r = stream.read_uint8();
+        uint8_t g = stream.read_uint8();
+        uint8_t b = stream.read_uint8();
+        uint8_t d = stream.read_uint8();
+        this_buffer[i++] = (r << 24) | (g << 16) | (b << 8) | d;
+      }
+      if (write_buffer_a) {
+        buffer_a_start_ts = this_start_ts;
+        memcpy(buffer_a, this_buffer, 256);
+        buffer_a_index = 0;
+      } else {
+        buffer_b_start_ts = this_start_ts;
+        memcpy(buffer_b, this_buffer, 256);
+        buffer_b_index = 0;
+      }
+      break;
+    }
     default: {
       Serial.print("Invalid command ");
       Serial.println(command);
@@ -116,7 +168,8 @@ void setup_mode() {
   Serial.println(serverIp.toString());
 
   if (!udp.connect(serverIp, UDP_PORT)) {
-    Serial.println("Failed to connect to UDP");
+    Serial.println("Failed to connect over UDP");
+    digitalWrite(LED_PIN, HIGH);
     return;
   }
 
@@ -131,7 +184,7 @@ void setup_mode() {
 void loop_mode() {
   int64_t current_time = esp_timer_get_time();
 
-  // client clock + clock offset + drift compensation
+  // client clock + clock offset + drift compensation = adjusted timestamp
   int64_t dt = current_time - last_sync_time;
   int64_t current_time_adjusted = current_time + base_offset + (int64_t)(drift_rate * dt);
 
@@ -140,7 +193,48 @@ void loop_mode() {
     last_sync_request = esp_timer_get_time();
     udp.write(COMMAND_SYNC);
   }
-  bool on = ((current_time_adjusted / 500000) % 2) == 0;
-  digitalWrite(LED_PIN, on);
+
+  //Serial.println("Ready");
+
+  if (state != requested_state) {
+    //Serial.println("State transition");
+    switch (requested_state) {
+      case STATE_PLAYING: {
+        if (current_time_adjusted >= start_ts) state = STATE_PLAYING;
+        break;
+      } case STATE_IDLE: {
+        if (current_time_adjusted >= stop_ts) state = STATE_IDLE;
+      }
+    }
+  }
+
+  switch (state) {
+    case STATE_PLAYING: {
+      //Serial.println("Playing");
+      if (current_time_adjusted > next_entry_timestamp) {
+        if ((read_buffer_a ? buffer_a_index : buffer_b_index) > 255) read_buffer_a = !read_buffer_a;
+        uint32_t next_entry = read_buffer_a ? buffer_a[buffer_a_index++] : buffer_b[buffer_b_index++];
+        uint8_t r = (next_entry >> 24) & 0xFF;
+        uint8_t g = (next_entry >> 16) & 0xFF;
+        uint8_t b = (next_entry >> 8) & 0xFF;
+        uint8_t d = next_entry & 0xFF;
+
+        Serial.print("R "); Serial.print(r);
+        Serial.print(" G "); Serial.print(g);
+        Serial.print(" B "); Serial.print(b);
+        Serial.print(" D "); Serial.println(d);
+
+        next_entry_timestamp = current_time_adjusted + ((d + 1) * DATA_TIMESTEP_MS * 1000);
+        digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+      }
+      break;
+    }
+    case STATE_IDLE: {
+      //Serial.println("Idle");
+      bool on = ((current_time_adjusted / 200000) % 2) == 0;
+      digitalWrite(LED_PIN, on);
+      break;
+    }
+  }
   delay(1);
 }
